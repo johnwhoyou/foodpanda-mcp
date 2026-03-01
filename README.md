@@ -130,7 +130,3 @@ Then use the local build in your MCP client config:
 - **Philippines only.** Targets foodpanda.ph specifically. Other regions use different API endpoints and may not work.
 - **Payment methods.** Only Cash on Delivery is supported. Credit card and GCash require browser-based payment flows (Adyen SDK / app redirect) that cannot be completed through API calls. See [#2](https://github.com/johnwhoyou/foodpanda-mcp/issues/2).
 - **Single delivery address.** Uses the saved address closest to your configured coordinates.
-
-## License
-
-MIT
