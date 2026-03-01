@@ -19,7 +19,7 @@ export function createServer(client: FoodpandaClient): McpServer {
     {
       title: "Search Restaurants",
       description:
-        "Search for restaurants on foodpanda.ph near the user's delivery address. Returns a list of matching restaurants with basic info (rating, delivery fee, delivery time, etc.).",
+        "Search for restaurants on foodpanda.ph near the configured delivery address. Returns a list of matching restaurants with id (vendor code), name, cuisine, rating, delivery fee, estimated delivery time, and minimum order amount.",
       inputSchema: z.object({
         query: z.string().describe("Search query (e.g. 'Jollibee', 'pizza', 'Thai food')"),
         cuisine: z.string().optional().describe("Filter by cuisine type"),
@@ -59,7 +59,7 @@ export function createServer(client: FoodpandaClient): McpServer {
       description:
         "Get detailed information about a specific restaurant including address, opening hours, minimum order, and delivery info.",
       inputSchema: z.object({
-        restaurant_id: z.string().describe("The restaurant ID from search results"),
+        restaurant_id: z.string().describe("The vendor code from search results (e.g. 'p7nl')"),
       }),
     },
     async ({ restaurant_id }) => {
@@ -93,9 +93,9 @@ export function createServer(client: FoodpandaClient): McpServer {
     {
       title: "Get Menu",
       description:
-        "Get the full menu for a restaurant, organized by category. Each item includes name, description, price, and available variations/toppings.",
+        "Get the full menu for a restaurant, organized by category. Each item includes id, code, name, description, price, image URL, and available topping groups with options. Use item codes or ids when adding to cart.",
       inputSchema: z.object({
-        restaurant_id: z.string().describe("The restaurant ID"),
+        restaurant_id: z.string().describe("The vendor code (e.g. 'p7nl')"),
       }),
     },
     async ({ restaurant_id }) => {
@@ -129,22 +129,26 @@ export function createServer(client: FoodpandaClient): McpServer {
     {
       title: "Add to Cart",
       description:
-        "Add one or more items to the cart. If items are from a different restaurant than the current cart, the cart is cleared first. Each item can have an optional variation and toppings.",
+        "Add one or more items to the cart. If items are from a different restaurant than the current cart, the cart is cleared first. Sends the full cart to foodpanda for price validation and returns updated totals.",
       inputSchema: z.object({
-        restaurant_id: z.string().describe("The restaurant ID"),
+        restaurant_id: z.string().describe("The vendor code (e.g. 'p7nl')"),
         items: z
           .array(
             z.object({
-              item_id: z.string().describe("Menu item ID"),
+              item_id: z.string().describe("Product code from the menu (e.g. 'ct-36-pd-1673')"),
               quantity: z.number().min(1).describe("Quantity to add"),
               variation_id: z
                 .string()
                 .optional()
-                .describe("ID of the selected variation (e.g. size)"),
+                .describe("Variation ID (usually not needed — first variation is used by default)"),
               topping_ids: z
                 .array(z.string())
                 .optional()
-                .describe("IDs of selected toppings/add-ons"),
+                .describe("IDs of selected topping options from the menu's topping_groups"),
+              special_instructions: z
+                .string()
+                .optional()
+                .describe("Special instructions for this item"),
             })
           )
           .describe("Items to add to cart"),
@@ -181,7 +185,7 @@ export function createServer(client: FoodpandaClient): McpServer {
     {
       title: "Get Cart",
       description:
-        "View the current cart contents including items, quantities, prices, and totals. Returns null if the cart is empty.",
+        "View the current in-memory cart contents including items, quantities, prices, delivery fee, service fee, and totals. Returns 'Cart is empty.' if no items have been added.",
       inputSchema: z.object({}),
     },
     async () => {
@@ -224,9 +228,9 @@ export function createServer(client: FoodpandaClient): McpServer {
     "remove_from_cart",
     {
       title: "Remove from Cart",
-      description: "Remove an item from the cart by its cart item ID.",
+      description: "Remove an item from the cart by its cart item ID (e.g. 'cart-1'). Re-calculates totals with remaining items.",
       inputSchema: z.object({
-        cart_item_id: z.string().describe("The cart item ID to remove"),
+        cart_item_id: z.string().describe("The cart item ID to remove (e.g. 'cart-1', from get_cart results)"),
       }),
     },
     async ({ cart_item_id }) => {
@@ -260,7 +264,7 @@ export function createServer(client: FoodpandaClient): McpServer {
     {
       title: "Place Order",
       description:
-        "Place the current cart as an order. Uses the default payment method from the user's foodpanda account unless overridden. Returns order confirmation with estimated delivery time.",
+        "[NOT YET AVAILABLE] Place the current cart as an order. This feature is not yet implemented — the checkout API has not been reverse-engineered. Calling this tool will return an error.",
       inputSchema: z.object({
         payment_method: z
           .string()
