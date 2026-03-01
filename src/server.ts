@@ -19,7 +19,7 @@ export function createServer(client: FoodpandaClient): McpServer {
     {
       title: "Search Restaurants",
       description:
-        "Search for restaurants on foodpanda.ph near the configured delivery address. Returns a list of matching restaurants with id (vendor code), name, cuisine, rating, delivery fee, estimated delivery time, and minimum order amount.",
+        "Search for restaurants on foodpanda.ph near the configured delivery address. Returns a list of matching restaurants with id (vendor code), name, cuisine, rating, delivery fee, estimated delivery time, and minimum order amount. Chain restaurants (e.g. Jollibee, McDonald's) include chain_code, chain_name, and total_outlets fields. When total_outlets > 1, use list_outlets with the chain_code to see all branches.",
       inputSchema: z.object({
         query: z.string().describe("Search query (e.g. 'Jollibee', 'pizza', 'Thai food')"),
         cuisine: z.string().optional().describe("Filter by cuisine type"),
@@ -43,6 +43,42 @@ export function createServer(client: FoodpandaClient): McpServer {
             {
               type: "text" as const,
               text: `Error searching restaurants: ${(error as Error).message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // --- list_outlets ---
+  server.registerTool(
+    "list_outlets",
+    {
+      title: "List Chain Outlets",
+      description:
+        "List all outlet branches for a restaurant chain. Use the chain_code from search_restaurants results (only available when total_outlets > 1). Returns all outlets with their individual vendor codes, names, delivery fees, and distances so the user can pick a specific branch.",
+      inputSchema: z.object({
+        chain_code: z.string().describe("The chain code from search results (e.g. 'cg0ep' for Jollibee)"),
+      }),
+    },
+    async ({ chain_code }) => {
+      try {
+        const outlets = await client.getChainOutlets(chain_code);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(outlets, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error listing outlets: ${(error as Error).message}`,
             },
           ],
           isError: true,
@@ -360,12 +396,12 @@ export function createServer(client: FoodpandaClient): McpServer {
     {
       title: "Place Order",
       description:
-        "Place the current cart as an order. You MUST call preview_order first and get explicit user confirmation before calling this. Supported payment methods: 'payment_on_delivery' (Cash on Delivery) and 'generic_creditcard' (saved credit card). The payment method name must match one from preview_order results.",
+        "Place the current cart as an order. You MUST call preview_order first and get explicit user confirmation before calling this. Only 'payment_on_delivery' (Cash on Delivery) is supported. Credit card and GCash require browser-based payment flows that cannot be completed via MCP.",
       inputSchema: z.object({
         payment_method: z
           .string()
           .describe(
-            "Payment method name from preview_order results (e.g. 'payment_on_delivery' or 'generic_creditcard')"
+            "Payment method name — use 'payment_on_delivery' (Cash on Delivery). Credit card is not supported via MCP."
           ),
         delivery_instructions: z
           .string()

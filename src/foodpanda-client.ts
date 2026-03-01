@@ -8,6 +8,7 @@ import type {
   OrderResult,
   AddToCartInput,
   CartProductPayload,
+  CartToppingPayload,
   CartVendorPayload,
   CartCalculateRequest,
   ToppingGroup,
@@ -21,6 +22,8 @@ import type {
 const FOODPANDA_API_BASE = "https://ph.fd-api.com";
 const GRAPHQL_SEARCH_HASH =
   "6d4dea2e0c8ab03c0d2934ca3db20b8914fc17e4109fb103307e4c077ba8506d";
+const GRAPHQL_VENDOR_LIST_HASH =
+  "ee02950ba8ef08427ef979e3954e3c1367c5636b18d6fc8a850ebf5fbf49d999";
 
 /** Shared shape for vendor menu data from the REST API */
 interface VendorMenuData {
@@ -190,7 +193,7 @@ export class FoodpandaClient {
     return response.json() as Promise<T>;
   }
 
-  private async graphqlRequest<T>(body: object): Promise<T> {
+  private async graphqlRequest<T>(body: object, displayContext: string = "SEARCH"): Promise<T> {
     const url = `${FOODPANDA_API_BASE}/graphql`;
     const response = await fetch(url, {
       method: "POST",
@@ -200,7 +203,7 @@ export class FoodpandaClient {
         "customer-code": this.customerCode,
         "customer-latitude": String(this.latitude),
         "customer-longitude": String(this.longitude),
-        "display-context": "SEARCH",
+        "display-context": displayContext,
         platform: "web",
         locale: "en_PH",
       },
@@ -290,6 +293,11 @@ export class FoodpandaClient {
                 >;
               };
             };
+            vendorChainData?: {
+              code: string;
+              name: string;
+            };
+            totalChainVendors?: number;
           }>;
         };
       };
@@ -298,6 +306,144 @@ export class FoodpandaClient {
     const result = await this.graphqlRequest<GqlResponse>(body);
 
     const components = result.data?.searchPage?.components || [];
+    const restaurants: Restaurant[] = [];
+
+    for (const comp of components) {
+      const v = comp.vendorData;
+      if (!v) continue;
+
+      // Extract cuisines from vendorTile
+      const cuisines: string[] = [];
+      if (v.vendorTile?.vendorInfo) {
+        for (const row of v.vendorTile.vendorInfo) {
+          for (const group of row) {
+            if (group.id === "VENDOR_INFO_CUISINES" && group.elements) {
+              for (const el of group.elements) {
+                if (el.text) cuisines.push(el.text);
+              }
+            }
+          }
+        }
+      }
+
+      const delivery = v.timeEstimations?.delivery?.duration;
+      const deliveryTime = delivery
+        ? `${delivery.lowerLimitInMinutes}-${delivery.upperLimitInMinutes} min`
+        : "N/A";
+
+      const restaurant: Restaurant = {
+        id: v.code,
+        name: v.name,
+        cuisine: cuisines,
+        rating: v.vendorRating?.value ?? 0,
+        review_count: v.vendorRating?.count ?? 0,
+        delivery_fee: v.dynamicPricing?.deliveryFee?.total ?? 0,
+        delivery_time: deliveryTime,
+        minimum_order: v.dynamicPricing?.minimumOrderValue?.total ?? 0,
+        distance_km: Math.round((v.availability?.distanceInMeters ?? 0) / 100) / 10,
+        is_open: v.availability?.status === "OPEN",
+      };
+
+      // Attach chain data if this vendor belongs to a chain
+      if (comp.vendorChainData?.code) {
+        restaurant.chain_code = comp.vendorChainData.code;
+        restaurant.chain_name = comp.vendorChainData.name;
+      }
+      if (comp.totalChainVendors && comp.totalChainVendors > 1) {
+        restaurant.total_outlets = comp.totalChainVendors;
+      }
+
+      restaurants.push(restaurant);
+    }
+
+    // Client-side cuisine filter
+    let filtered = restaurants;
+    if (cuisine) {
+      const cuisineLower = cuisine.toLowerCase();
+      filtered = restaurants.filter((r) =>
+        r.cuisine.some((c) => c.toLowerCase().includes(cuisineLower))
+      );
+    }
+
+    const maxResults = limit ?? 10;
+    return filtered.slice(0, maxResults);
+  }
+
+  // ----------------------------------------------------------------
+  // 1b. List Chain Outlets
+  // ----------------------------------------------------------------
+
+  async getChainOutlets(chainCode: string): Promise<Restaurant[]> {
+    const body = {
+      extensions: {
+        persistedQuery: {
+          sha256Hash: GRAPHQL_VENDOR_LIST_HASH,
+          version: 1,
+        },
+      },
+      variables: {
+        input: {
+          expeditionType: "DELIVERY",
+          latitude: this.latitude,
+          longitude: this.longitude,
+          locale: "en_PH",
+          customerType: "B2C",
+          languageId: 1,
+          page: "CHAIN_LISTING_PAGE",
+          availabilityFilters: {
+            chainCodes: [chainCode],
+          },
+        },
+      },
+    };
+
+    interface ChainGqlResponse {
+      data: {
+        vendorListingPage: {
+          components: Array<{
+            vendorData?: {
+              code: string;
+              name: string;
+              availability: {
+                status: string;
+                distanceInMeters: number;
+              };
+              vendorRating: {
+                value: number;
+                count: number;
+              };
+              dynamicPricing: {
+                deliveryFee: { total: number };
+                minimumOrderValue: { total: number };
+              };
+              timeEstimations: {
+                delivery: {
+                  duration: {
+                    lowerLimitInMinutes: number;
+                    upperLimitInMinutes: number;
+                  };
+                } | null;
+              };
+              vendorTile?: {
+                vendorInfo?: Array<
+                  Array<{
+                    id: string;
+                    elements: Array<{
+                      text: string;
+                    }>;
+                  }>
+                >;
+              };
+            };
+          }>;
+        };
+      };
+    }
+
+    const result = await this.graphqlRequest<ChainGqlResponse>(body, "rlp");
+
+
+    const components = result.data?.vendorListingPage?.components || [];
     const restaurants: Restaurant[] = [];
 
     for (const comp of components) {
@@ -334,20 +480,11 @@ export class FoodpandaClient {
         minimum_order: v.dynamicPricing?.minimumOrderValue?.total ?? 0,
         distance_km: Math.round((v.availability?.distanceInMeters ?? 0) / 100) / 10,
         is_open: v.availability?.status === "OPEN",
+        chain_code: chainCode,
       });
     }
 
-    // Client-side cuisine filter
-    let filtered = restaurants;
-    if (cuisine) {
-      const cuisineLower = cuisine.toLowerCase();
-      filtered = restaurants.filter((r) =>
-        r.cuisine.some((c) => c.toLowerCase().includes(cuisineLower))
-      );
-    }
-
-    const maxResults = limit ?? 10;
-    return filtered.slice(0, maxResults);
+    return restaurants;
   }
 
   // ----------------------------------------------------------------
@@ -608,11 +745,7 @@ export class FoodpandaClient {
       }
 
       // Build toppings payload
-      const toppingsPayload: Array<{
-        id: number;
-        quantity: number;
-        options: Array<{ id: number; quantity: number }>;
-      }> = [];
+      const toppingsPayload: CartToppingPayload[] = [];
 
       if (input.topping_ids && input.topping_ids.length > 0) {
         // Group selected option IDs by their topping group
@@ -627,9 +760,11 @@ export class FoodpandaClient {
           if (selectedOptions.length > 0) {
             toppingsPayload.push({
               id: group.id,
+              name: group.name,
               quantity: 1,
               options: selectedOptions.map((opt) => ({
                 id: opt.id,
+                name: opt.name,
                 quantity: 1,
               })),
             });
@@ -910,6 +1045,14 @@ export class FoodpandaClient {
       throw new Error("Cart is empty. Add items before previewing an order.");
     }
 
+    // Check if the restaurant is currently open for delivery
+    const vendorDetails = await this.getRestaurantDetails(this.cartVendor.code);
+    if (!vendorDetails.is_open || !vendorDetails.is_delivery_available) {
+      throw new Error(
+        `${vendorDetails.name} is currently closed or not accepting delivery orders. Please try again during their operating hours.`
+      );
+    }
+
     const [customer, addresses, intent] = await Promise.all([
       this.getCustomerProfile(),
       this.getDeliveryAddresses(),
@@ -967,6 +1110,9 @@ export class FoodpandaClient {
       throw new Error("Cart is empty.");
     }
 
+    // Re-calculate cart to ensure product data is fresh and matches server state
+    await this.calculateCart();
+
     const { customer, address, purchaseIntentId, paymentMethods } =
       this.checkoutState;
 
@@ -988,31 +1134,16 @@ export class FoodpandaClient {
       method: string;
     }> = [];
 
-    if (selectedMethod.name === "generic_creditcard" && selectedMethod.card_details) {
-      paymentMethodsPayload.push({
-        amount: this.cartTotal,
-        metadata: {
-          type: "encrypted",
-          card: {
-            tokenize: true,
-            token: "",
-            encrypted: selectedMethod.instrument_id,
-            scheme: selectedMethod.card_details.scheme,
-            last_4_digits: selectedMethod.card_details.last_4_digits,
-            card_bank_identification_number: selectedMethod.card_details.bin,
-            valid_to_month: selectedMethod.card_details.valid_to_month,
-            valid_to_year: selectedMethod.card_details.valid_to_year,
-            holder_name: selectedMethod.card_details.owner,
-          },
-          screenHeight: 1112,
-          screenWidth: 1710,
-        },
-        method: "generic_creditcard",
-      });
+    if (selectedMethod.name === "generic_creditcard") {
+      throw new Error(
+        "Credit card payments are not supported via MCP. Foodpanda requires a browser-based payment flow (Adyen SDK) to authorize credit card charges, which cannot be completed through API calls alone. Please use 'payment_on_delivery' (Cash on Delivery) instead."
+      );
     } else if (selectedMethod.name === "payment_on_delivery") {
       paymentMethodsPayload.push({
         amount: this.cartTotal,
-        metadata: {},
+        metadata: {
+          token: selectedMethod.instrument_id,
+        },
         method: "payment_on_delivery",
       });
     } else {
@@ -1136,6 +1267,7 @@ export class FoodpandaClient {
     };
 
     interface CheckoutResponse {
+      id?: string;
       order?: {
         code?: string;
         order_code?: string;
@@ -1150,7 +1282,19 @@ export class FoodpandaClient {
         code?: string;
         status?: string;
       };
+      payment?: {
+        result?: string;
+        purchase_id?: string;
+        action?: string | null;
+        reason?: string;
+      };
+      expedition?: {
+        expected_delivery_duration?: number;
+      };
       redirect_url?: string;
+      errors?: Array<{ message?: string; code?: string }>;
+      error?: string;
+      message?: string;
     }
 
     const result = await this.restRequest<CheckoutResponse>(
@@ -1166,30 +1310,73 @@ export class FoodpandaClient {
       }
     );
 
-    // Capture total before clearing cart
-    const finalTotal = checkoutBody.expected_total_amount;
+    // Log raw response for debugging
+    console.error("[placeOrder] checkout response:", JSON.stringify(result, null, 2));
 
+    // Check for error indicators in the response body
+    if (result.errors && result.errors.length > 0) {
+      const messages = result.errors
+        .map((e) => e.message || e.code || "unknown error")
+        .join("; ");
+      throw new Error(`Checkout failed: ${messages}`);
+    }
+    if (result.error) {
+      throw new Error(`Checkout failed: ${result.error}`);
+    }
+    if (result.message && !result.order && !result.code && !result.order_code && !result.data) {
+      throw new Error(`Checkout failed: ${result.message}`);
+    }
+
+    // Handle redirect_url (e.g. 3DS authentication for credit cards)
+    if (result.redirect_url) {
+      throw new Error(
+        `Payment requires browser authentication. Please complete payment at: ${result.redirect_url}`
+      );
+    }
+
+    // Extract order code — the API returns it as `id` at the top level
     const orderCode =
+      result.id ??
       result.order?.code ??
       result.order?.order_code ??
       result.code ??
       result.order_code ??
       result.data?.order_code ??
       result.data?.code ??
-      "unknown";
+      null;
 
+    if (!orderCode) {
+      console.error("[placeOrder] no order code found in response:", JSON.stringify(result));
+      throw new Error(
+        "Order may not have been placed — no order code in response. Check your foodpanda app/website to confirm. Raw response logged to server stderr."
+      );
+    }
+
+    // Extract status from payment result or top-level status
     const status =
-      result.order?.status ?? result.status ?? result.data?.status ?? "placed";
+      result.payment?.result ??
+      result.order?.status ??
+      result.status ??
+      result.data?.status ??
+      "placed";
 
-    // Clear cart after successful order
+    // Capture total before clearing cart
+    const finalTotal = checkoutBody.expected_total_amount;
+
+    // Derive estimated delivery time from available response fields
+    const deliveryMinutes = result.expedition?.expected_delivery_duration ?? 0;
+    const estimatedDelivery =
+      result.order?.estimated_delivery_time ??
+      (deliveryMinutes > 0 ? `${deliveryMinutes} min` : "");
+
+    // Only clear cart after confirmed successful order
     this.clearCart();
     this.checkoutState = null;
 
     return {
       order_id: orderCode,
       status,
-      estimated_delivery_time:
-        result.order?.estimated_delivery_time ?? "",
+      estimated_delivery_time: estimatedDelivery,
       total: finalTotal,
     };
   }

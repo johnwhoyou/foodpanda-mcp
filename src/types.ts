@@ -11,6 +11,9 @@ export interface Restaurant {
   minimum_order: number;
   distance_km: number;
   is_open: boolean;
+  chain_code?: string;    // e.g. "cg0ep" — present for chain restaurants
+  chain_name?: string;    // e.g. "Jollibee"
+  total_outlets?: number; // e.g. 17 — use list_outlets to see all branches
 }
 
 export interface RestaurantDetails extends Restaurant {
@@ -232,12 +235,14 @@ export interface CartProductPayload {
 
 export interface CartToppingPayload {
   id: number;
+  name: string;
   quantity: number;
   options: CartToppingOptionPayload[];
 }
 
 export interface CartToppingOptionPayload {
   id: number;
+  name: string;
   quantity: number;
 }
 

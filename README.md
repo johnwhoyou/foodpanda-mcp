@@ -10,7 +10,7 @@ Tell your AI assistant what you want to eat, and it handles the rest — searchi
 - Browse full menus with prices, descriptions, and customization options
 - Build a cart with real-time price validation from foodpanda
 - Two-step checkout with order preview and explicit confirmation
-- Supports Cash on Delivery and saved credit card payments
+- Checkout with Cash on Delivery (credit card and GCash require browser-based payment flows and are not supported)
 
 ## Quick Start
 
@@ -131,7 +131,7 @@ Then use the local build in your MCP client config:
 - **Session tokens expire.** Refresh your token by repeating the setup step when API calls start failing.
 - **No official API.** This server reverse-engineers foodpanda's internal web API. It may break if foodpanda changes their API.
 - **Philippines only.** Targets foodpanda.ph specifically. Other regions use different API endpoints and may not work.
-- **Payment methods.** Currently supports Cash on Delivery and saved credit cards. GCash and other redirect-based payment methods are not supported.
+- **Payment methods.** Only Cash on Delivery is supported. Credit card and GCash require browser-based payment flows (Adyen SDK / app redirect) that cannot be completed through API calls. See [#2](https://github.com/johnwhoyou/foodpanda-mcp/issues/2).
 - **Single delivery address.** Uses the saved address closest to your configured coordinates.
 
 ## License
