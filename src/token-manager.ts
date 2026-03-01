@@ -59,6 +59,11 @@ export async function refreshTokenViaBrowser(
     context = await chromium.launchPersistentContext(BROWSER_DATA_DIR, {
       headless: false,
       channel: "chrome",
+      // Hide automation signals so Google OAuth doesn't block sign-in.
+      // --enable-automation sets navigator.webdriver=true and shows the
+      // "controlled by automated test software" infobar.
+      ignoreDefaultArgs: ["--enable-automation"],
+      args: ["--disable-blink-features=AutomationControlled"],
     });
   } catch (err) {
     throw new Error(
