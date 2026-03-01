@@ -91,7 +91,7 @@ interface CachedVendorMenu {
 }
 
 export class FoodpandaClient {
-  private sessionToken: string;
+  private sessionToken: string | null;
   private latitude: number;
   private longitude: number;
   private customerCode: string;
@@ -113,11 +113,11 @@ export class FoodpandaClient {
   // Menu cache keyed by vendor code
   private menuCache: Map<string, CachedVendorMenu> = new Map();
 
-  constructor(sessionToken: string, latitude: number, longitude: number) {
+  constructor(sessionToken: string | null, latitude: number, longitude: number) {
     this.sessionToken = sessionToken;
     this.latitude = latitude;
     this.longitude = longitude;
-    this.customerCode = this.extractCustomerCode(sessionToken);
+    this.customerCode = sessionToken ? this.extractCustomerCode(sessionToken) : "";
 
     // Generate Perseus tracking IDs (required by GraphQL endpoint)
     const ts = Date.now();
@@ -148,11 +148,25 @@ export class FoodpandaClient {
     }
   }
 
+  /**
+   * Hot-swap the session token (e.g. after a browser-based refresh).
+   * Re-extracts the customer code from the new JWT.
+   */
+  public updateSessionToken(token: string): void {
+    this.sessionToken = token;
+    this.customerCode = this.extractCustomerCode(token);
+  }
+
   // ----------------------------------------------------------------
   // HTTP helpers
   // ----------------------------------------------------------------
 
   private commonHeaders(): Record<string, string> {
+    if (!this.sessionToken) {
+      throw new Error(
+        "No session token configured. Please call the refresh_token tool to log in."
+      );
+    }
     return {
       Authorization: `Bearer ${this.sessionToken}`,
       "x-fp-api-key": "volo",
