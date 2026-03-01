@@ -12,6 +12,10 @@ import type {
   CartCalculateRequest,
   ToppingGroup,
   ScheduleEntry,
+  CustomerProfile,
+  DeliveryAddress,
+  PaymentMethodInfo,
+  OrderPreview,
 } from "./types.js";
 
 const FOODPANDA_API_BASE = "https://ph.fd-api.com";
@@ -88,6 +92,8 @@ export class FoodpandaClient {
   private latitude: number;
   private longitude: number;
   private customerCode: string;
+  private perseusClientId: string;
+  private perseusSessionId: string;
 
   // In-memory cart state (foodpanda cart is stateless / server recalculates)
   private cartProducts: CartProductPayload[] = [];
@@ -109,6 +115,15 @@ export class FoodpandaClient {
     this.latitude = latitude;
     this.longitude = longitude;
     this.customerCode = this.extractCustomerCode(sessionToken);
+
+    // Generate Perseus tracking IDs (required by GraphQL endpoint)
+    const ts = Date.now();
+    const rand1 = Math.random().toString().slice(2, 20);
+    const rand2 = Math.random().toString(36).slice(2, 12);
+    this.perseusClientId = `${ts}.${rand1}.${rand2}`;
+    const rand3 = Math.random().toString().slice(2, 20);
+    const rand4 = Math.random().toString(36).slice(2, 12);
+    this.perseusSessionId = `${ts}.${rand3}.${rand4}`;
   }
 
   /**
@@ -141,6 +156,8 @@ export class FoodpandaClient {
       "User-Agent":
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
       Accept: "application/json, text/plain, */*",
+      "perseus-client-id": this.perseusClientId,
+      "perseus-session-id": this.perseusSessionId,
     };
   }
 
@@ -183,6 +200,7 @@ export class FoodpandaClient {
         "customer-code": this.customerCode,
         "customer-latitude": String(this.latitude),
         "customer-longitude": String(this.longitude),
+        "display-context": "SEARCH",
         platform: "web",
         locale: "en_PH",
       },
@@ -718,16 +736,462 @@ export class FoodpandaClient {
   }
 
   // ----------------------------------------------------------------
-  // 7. Place Order (NOT YET IMPLEMENTED)
+  // 7. Preview Order
+  // ----------------------------------------------------------------
+
+  /** Cached checkout state from previewOrder, used by placeOrder */
+  private checkoutState: {
+    customer: CustomerProfile;
+    address: DeliveryAddress;
+    purchaseIntentId: string;
+    paymentMethods: PaymentMethodInfo[];
+  } | null = null;
+
+  /** Cached customer profile (rarely changes) */
+  private cachedCustomerProfile: CustomerProfile | null = null;
+
+  private async getCustomerProfile(): Promise<CustomerProfile> {
+    if (this.cachedCustomerProfile) return this.cachedCustomerProfile;
+
+    const result = await this.restRequest<{
+      data: {
+        id: string;
+        code: string;
+        first_name: string;
+        last_name: string;
+        email: string;
+        mobile_number: string;
+        mobile_country_code: string;
+      };
+    }>("/api/v5/customers");
+
+    this.cachedCustomerProfile = result.data;
+    return result.data;
+  }
+
+  private async getDeliveryAddresses(): Promise<DeliveryAddress[]> {
+    const result = await this.restRequest<{
+      data: { items: DeliveryAddress[] };
+    }>("/api/v5/customers/addresses");
+
+    return result.data.items;
+  }
+
+  /**
+   * Pick the best delivery address: closest to configured lat/lng.
+   */
+  private pickDeliveryAddress(addresses: DeliveryAddress[]): DeliveryAddress {
+    if (addresses.length === 0) {
+      throw new Error(
+        "No saved delivery addresses found. Please add an address in the foodpanda app first."
+      );
+    }
+    if (addresses.length === 1) return addresses[0];
+
+    let best = addresses[0];
+    let bestDist = Infinity;
+    for (const addr of addresses) {
+      const dlat = addr.latitude - this.latitude;
+      const dlng = addr.longitude - this.longitude;
+      const dist = dlat * dlat + dlng * dlng;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = addr;
+      }
+    }
+    return best;
+  }
+
+  private async getPurchaseIntent(
+    vendorCode: string,
+    subtotal: number,
+    total: number
+  ): Promise<{
+    intentId: string;
+    paymentMethods: PaymentMethodInfo[];
+  }> {
+    interface IntentResponse {
+      data: {
+        purchaseIntent: { id: string };
+        paymentMethodDetails: {
+          paymentMethods: Array<{
+            name: string;
+            hidden: boolean;
+            isOnlinePaymentMethod: boolean;
+            preferred: boolean;
+            paymentInstruments: Array<{
+              publicId: string;
+              preferred: boolean;
+              publicFields?: {
+                displayValue?: string;
+                bin?: string;
+                owner?: string;
+                validToMonth?: number;
+                validToYear?: number;
+                scheme?: string;
+              };
+            }> | null;
+          }>;
+        };
+      };
+    }
+
+    const result = await this.restRequest<IntentResponse>(
+      "/api/v5/purchase/intent?include=cashback&locale=en_PH",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          subtotal,
+          currency: "PHP",
+          vendorCode,
+          amount: total,
+          emoneyAmountToUse: 0,
+          expeditionType: "delivery",
+          paymentLimits: [
+            { limitCode: "foodafterdiscount", limitAmount: subtotal },
+            { limitCode: "orderamountwithoutpaymentfee", limitAmount: total },
+          ],
+        }),
+      }
+    );
+
+    const intentId = result.data.purchaseIntent.id;
+    const methods: PaymentMethodInfo[] = [];
+
+    for (const pm of result.data.paymentMethodDetails.paymentMethods) {
+      if (pm.hidden) continue;
+
+      if (pm.name === "payment_on_delivery") {
+        const instrument = pm.paymentInstruments?.[0];
+        methods.push({
+          name: "payment_on_delivery",
+          display_name: "Cash on Delivery",
+          instrument_id: instrument?.publicId ?? null,
+        });
+      } else if (pm.name === "generic_creditcard") {
+        // List each saved card as a separate option
+        if (pm.paymentInstruments && pm.paymentInstruments.length > 0) {
+          for (const inst of pm.paymentInstruments) {
+            const pf = inst.publicFields;
+            const label = pf?.scheme && pf?.displayValue
+              ? `${pf.scheme} ending ${pf.displayValue}`
+              : "Saved card";
+            methods.push({
+              name: "generic_creditcard",
+              display_name: label,
+              instrument_id: inst.publicId,
+              card_details: pf
+                ? {
+                    scheme: pf.scheme ?? "",
+                    last_4_digits: pf.displayValue ?? "",
+                    bin: pf.bin ?? "",
+                    owner: pf.owner ?? "",
+                    valid_to_month: pf.validToMonth ?? 0,
+                    valid_to_year: pf.validToYear ?? 0,
+                  }
+                : undefined,
+            });
+          }
+        }
+      } else if (pm.name === "antfinancial_gcash") {
+        methods.push({
+          name: "antfinancial_gcash",
+          display_name: "GCash (requires app redirect — may not work via MCP)",
+          instrument_id: null,
+        });
+      }
+    }
+
+    return { intentId, paymentMethods: methods };
+  }
+
+  async previewOrder(): Promise<OrderPreview> {
+    if (this.cartProducts.length === 0 || !this.cartVendor) {
+      throw new Error("Cart is empty. Add items before previewing an order.");
+    }
+
+    const [customer, addresses, intent] = await Promise.all([
+      this.getCustomerProfile(),
+      this.getDeliveryAddresses(),
+      this.getPurchaseIntent(
+        this.cartVendor.code,
+        this.cartSubtotal,
+        this.cartTotal
+      ),
+    ]);
+
+    const address = this.pickDeliveryAddress(addresses);
+
+    // Cache for placeOrder
+    this.checkoutState = {
+      customer,
+      address,
+      purchaseIntentId: intent.intentId,
+      paymentMethods: intent.paymentMethods,
+    };
+
+    return {
+      cart: {
+        restaurant_id: this.cartVendor.code,
+        restaurant_name: this.cartVendorName,
+        items: this.cartItems,
+        subtotal: this.cartSubtotal,
+        delivery_fee: this.cartDeliveryFee,
+        service_fee: this.cartServiceFee,
+        total: this.cartTotal,
+      },
+      delivery_address: {
+        id: address.id,
+        label: address.label,
+        formatted_address: address.formatted_customer_address,
+        delivery_instructions: address.delivery_instructions,
+      },
+      payment_methods: intent.paymentMethods,
+    };
+  }
+
+  // ----------------------------------------------------------------
+  // 8. Place Order
   // ----------------------------------------------------------------
 
   async placeOrder(
-    _paymentMethod?: string,
-    _specialInstructions?: string
+    paymentMethodName: string,
+    deliveryInstructions?: string
   ): Promise<OrderResult> {
-    throw new Error(
-      "Place order is not yet implemented. The checkout API has not been reverse-engineered yet."
+    if (!this.checkoutState) {
+      throw new Error(
+        "No order preview found. Call preview_order first to prepare checkout."
+      );
+    }
+    if (this.cartProducts.length === 0 || !this.cartVendor) {
+      throw new Error("Cart is empty.");
+    }
+
+    const { customer, address, purchaseIntentId, paymentMethods } =
+      this.checkoutState;
+
+    // Find the selected payment method
+    const selectedMethod = paymentMethods.find(
+      (m) => m.name === paymentMethodName
     );
+    if (!selectedMethod) {
+      const available = paymentMethods.map((m) => m.name).join(", ");
+      throw new Error(
+        `Payment method "${paymentMethodName}" not available. Available: ${available}`
+      );
+    }
+
+    // Build payment methods array for checkout
+    const paymentMethodsPayload: Array<{
+      amount: number;
+      metadata: Record<string, unknown>;
+      method: string;
+    }> = [];
+
+    if (selectedMethod.name === "generic_creditcard" && selectedMethod.card_details) {
+      paymentMethodsPayload.push({
+        amount: this.cartTotal,
+        metadata: {
+          type: "encrypted",
+          card: {
+            tokenize: true,
+            token: "",
+            encrypted: selectedMethod.instrument_id,
+            scheme: selectedMethod.card_details.scheme,
+            last_4_digits: selectedMethod.card_details.last_4_digits,
+            card_bank_identification_number: selectedMethod.card_details.bin,
+            valid_to_month: selectedMethod.card_details.valid_to_month,
+            valid_to_year: selectedMethod.card_details.valid_to_year,
+            holder_name: selectedMethod.card_details.owner,
+          },
+          screenHeight: 1112,
+          screenWidth: 1710,
+        },
+        method: "generic_creditcard",
+      });
+    } else if (selectedMethod.name === "payment_on_delivery") {
+      paymentMethodsPayload.push({
+        amount: this.cartTotal,
+        metadata: {},
+        method: "payment_on_delivery",
+      });
+    } else {
+      throw new Error(
+        `Payment method "${selectedMethod.name}" is not supported for automated checkout. Use "payment_on_delivery" or "generic_creditcard".`
+      );
+    }
+
+    // Build checkout product payloads (more verbose than cart/calculate)
+    const cached = this.menuCache.get(this.cartVendor.code);
+    const checkoutProducts = this.cartProducts.map((p) => {
+      const menuItem = cached?.productsById.get(p.id);
+      return {
+        description: menuItem?.description ?? "",
+        priceBeforeDiscount: null,
+        name: menuItem?.name ?? p.variation_name,
+        vat_percentage: p.vat_percentage,
+        discount: null,
+        special_instructions: p.special_instructions,
+        variation_name: "",
+        sold_out_option: p.sold_out_option,
+        toppings: p.toppings,
+        price: p.price,
+        packaging_price: p.packaging_charge,
+        original_price: p.original_price,
+        quantity: p.quantity,
+        quantity_auto_added: 0,
+        id: p.id,
+        variation_id: p.variation_id,
+        is_available: true,
+        is_alcoholic_item: false,
+        total_price: p.price * p.quantity,
+        total_price_before_discount: p.price * p.quantity,
+        products: [],
+        product_variation_id: p.variation_id,
+        product_id: p.id,
+        sold_out_options: [
+          { default: true, option: "REFUND", text: "NEXTGEN_SoldOutOptions_Refund" },
+          { default: false, option: "CALL_CUSTOMER", text: "NEXTGEN_SoldOutOptions_CALL_CUSTOMER" },
+        ],
+        product_variations: [
+          {
+            id: p.variation_id,
+            code: p.variation_code,
+            remote_code: p.variation_code,
+            container_price: 0,
+            price: p.price,
+            topping_ids: p.toppings.map((t) => t.id),
+            topping_properties: [],
+            unit_pricing: null,
+            total_price: 0,
+            dietary_attributes: {},
+          },
+        ],
+        code: p.code,
+        variation_code: p.variation_code,
+        is_bundle: false,
+        tags: [],
+        imageUrl: menuItem?.image_url ?? "",
+        initial_price: p.price,
+        initial_original_price: p.original_price,
+        product_type: "",
+      };
+    });
+
+    // Build dps-session-id header
+    const dpsPayload = {
+      session_id: Array.from({ length: 32 }, () =>
+        Math.floor(Math.random() * 16).toString(16)
+      ).join(""),
+      perseus_id: this.perseusClientId,
+      timestamp: Math.floor(Date.now() / 1000),
+    };
+    const dpsSessionId = Buffer.from(JSON.stringify(dpsPayload)).toString("base64");
+
+    // Build the full checkout body
+    const checkoutBody = {
+      platform: "b2c",
+      expected_total_amount: this.cartTotal,
+      customer: {
+        id: customer.id,
+        email: customer.email,
+        address_id: String(address.id),
+        age_verification_token: "",
+      },
+      expedition: {
+        delivery_address: {
+          ...address,
+          id: String(address.id),
+          type: String(address.type),
+          location_type: "polygon",
+          object_type: "saved address",
+        },
+        type: "delivery",
+        latitude: address.latitude,
+        longitude: address.longitude,
+        instructions: deliveryInstructions ?? "",
+        delivery_instructions_tags: [] as string[],
+        delivery_option: "standard",
+      },
+      order_time: "now",
+      source: "volo",
+      vendor: this.cartVendor,
+      products: checkoutProducts,
+      payment: {
+        client_redirect_url: "https://www.foodpanda.ph/payments/handle-payment/",
+        purchase_intent_id: purchaseIntentId,
+        currency: "PHP",
+        methods: paymentMethodsPayload,
+      },
+      voucher: "",
+      voucher_context: { construct_id: "" },
+      bypass_duplicate_order_check: false,
+      supported_features: {
+        support_banned_products_soft_fail: true,
+        small_order_fee_enabled: true,
+        "pd-tx-cash-to-online-payment-surcharge": false,
+      },
+      joker_offer_id: "",
+      joker: { single_discount: true },
+    };
+
+    interface CheckoutResponse {
+      order?: {
+        code?: string;
+        order_code?: string;
+        status?: string;
+        estimated_delivery_time?: string;
+      };
+      code?: string;
+      order_code?: string;
+      status?: string;
+      data?: {
+        order_code?: string;
+        code?: string;
+        status?: string;
+      };
+      redirect_url?: string;
+    }
+
+    const result = await this.restRequest<CheckoutResponse>(
+      "/api/v5/cart/checkout",
+      {
+        method: "POST",
+        body: JSON.stringify(checkoutBody),
+        headers: {
+          "dps-session-id": dpsSessionId,
+          "x-caller-platform": "mfe",
+          "x-global-entity-id": "FP_PH",
+        },
+      }
+    );
+
+    // Capture total before clearing cart
+    const finalTotal = checkoutBody.expected_total_amount;
+
+    const orderCode =
+      result.order?.code ??
+      result.order?.order_code ??
+      result.code ??
+      result.order_code ??
+      result.data?.order_code ??
+      result.data?.code ??
+      "unknown";
+
+    const status =
+      result.order?.status ?? result.status ?? result.data?.status ?? "placed";
+
+    // Clear cart after successful order
+    this.clearCart();
+    this.checkoutState = null;
+
+    return {
+      order_id: orderCode,
+      status,
+      estimated_delivery_time:
+        result.order?.estimated_delivery_time ?? "",
+      total: finalTotal,
+    };
   }
 
   // ----------------------------------------------------------------

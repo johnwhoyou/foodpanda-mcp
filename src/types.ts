@@ -101,6 +101,102 @@ export interface OrderResult {
   total: number;
 }
 
+// --- Checkout-related types ---
+
+export interface CustomerProfile {
+  id: string; // numeric ID, e.g. "59300155"
+  code: string; // customer code, e.g. "phkb47lw"
+  first_name: string;
+  last_name: string;
+  email: string;
+  mobile_number: string;
+  mobile_country_code: string;
+}
+
+/** Raw delivery address from /api/v5/customers/addresses */
+export interface DeliveryAddress {
+  id: number;
+  city_id: number;
+  city: string;
+  city_name: string | null;
+  area_id: number | null;
+  areas: unknown;
+  address_line1: string;
+  address_line2: string;
+  address_line3: string | null;
+  address_line4: string | null;
+  address_line5: string | null;
+  address_other: string | null;
+  room: string | null;
+  flat_number: string | null;
+  structure: string | null;
+  building: string;
+  intercom: string | null;
+  entrance: string | null;
+  floor: string | null;
+  district: string | null;
+  postcode: string | null;
+  meta: string;
+  company: string | null;
+  longitude: number;
+  latitude: number;
+  is_delivery_available: boolean;
+  formatted_customer_address: string;
+  delivery_instructions: string;
+  title: string | null;
+  type: number;
+  label: string | null;
+  formatted_address: string | null;
+  is_same_as_requested_location: boolean | null;
+  campus: string | null;
+  corporate_reference_id: string | null;
+  form_id: string;
+  country_code: string;
+  country_iso: string;
+  created_at: string;
+  updated_at: string;
+  phone_number: string | null;
+  phone_country_code: string | null;
+  block: string | null;
+  property_type: string | null;
+  place_name: string | null;
+  landmark: string | null;
+  meeting_point: string | null;
+  door_code: string | null;
+  free_text_address: string | null;
+  gate: string | null;
+  entrance_picture: string | null;
+  hyperlocal_fields: string;
+  entrance_latitude: number | null;
+  entrance_longitude: number | null;
+}
+
+export interface PaymentMethodInfo {
+  name: string; // e.g. "payment_on_delivery", "generic_creditcard"
+  display_name: string; // e.g. "Cash on Delivery", "Mastercard ending 0004"
+  instrument_id: string | null; // publicId for saved instruments
+  /** For saved credit cards: card details needed for checkout payload */
+  card_details?: {
+    scheme: string;
+    last_4_digits: string;
+    bin: string;
+    owner: string;
+    valid_to_month: number;
+    valid_to_year: number;
+  };
+}
+
+export interface OrderPreview {
+  cart: Cart;
+  delivery_address: {
+    id: number;
+    label: string | null;
+    formatted_address: string;
+    delivery_instructions: string;
+  };
+  payment_methods: PaymentMethodInfo[];
+}
+
 export interface AddToCartInput {
   item_id: string; // product code (e.g. "ct-36-pd-1673")
   quantity: number;

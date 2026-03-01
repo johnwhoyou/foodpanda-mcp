@@ -93,7 +93,7 @@ export function createServer(client: FoodpandaClient): McpServer {
     {
       title: "Get Menu",
       description:
-        "Get the full menu for a restaurant, organized by category. Each item includes id, code, name, description, price, image URL, and available topping groups with options. Use item codes or ids when adding to cart.",
+        "Get the menu for a restaurant, organized by category. Returns a compact list with each item's code, name, price, and sold-out status. Use the item code when adding to cart. Use get_item_details if you need topping/customization options for a specific item.",
       inputSchema: z.object({
         restaurant_id: z.string().describe("The vendor code (e.g. 'p7nl')"),
       }),
@@ -101,11 +101,22 @@ export function createServer(client: FoodpandaClient): McpServer {
     async ({ restaurant_id }) => {
       try {
         const menu = await client.getMenu(restaurant_id);
+        // Strip topping_groups to keep response compact
+        const compact = menu.map((cat) => ({
+          name: cat.name,
+          items: cat.items.map((item) => ({
+            code: item.code,
+            name: item.name,
+            price: item.price,
+            description: item.description || undefined,
+            is_sold_out: item.is_sold_out || undefined,
+          })),
+        }));
         return {
           content: [
             {
               type: "text" as const,
-              text: JSON.stringify(menu, null, 2),
+              text: JSON.stringify(compact, null, 2),
             },
           ],
         };
@@ -115,6 +126,57 @@ export function createServer(client: FoodpandaClient): McpServer {
             {
               type: "text" as const,
               text: `Error getting menu: ${(error as Error).message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
+  // --- get_item_details ---
+  server.registerTool(
+    "get_item_details",
+    {
+      title: "Get Item Details",
+      description:
+        "Get full details for a menu item including all topping groups and customization options. Use this when you need to know what toppings/variations are available before adding to cart.",
+      inputSchema: z.object({
+        restaurant_id: z.string().describe("The vendor code (e.g. 'p7nl')"),
+        item_code: z.string().describe("The product code from the menu (e.g. 'ct-36-pd-1673')"),
+      }),
+    },
+    async ({ restaurant_id, item_code }) => {
+      try {
+        const menu = await client.getMenu(restaurant_id);
+        for (const cat of menu) {
+          const item = cat.items.find((i) => i.code === item_code);
+          if (item) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({ category: cat.name, ...item }, null, 2),
+                },
+              ],
+            };
+          }
+        }
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Item "${item_code}" not found in menu for restaurant "${restaurant_id}".`,
+            },
+          ],
+          isError: true,
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error getting item details: ${(error as Error).message}`,
             },
           ],
           isError: true,
@@ -258,27 +320,62 @@ export function createServer(client: FoodpandaClient): McpServer {
     }
   );
 
+  // --- preview_order ---
+  server.registerTool(
+    "preview_order",
+    {
+      title: "Preview Order",
+      description:
+        "Preview the current cart as an order. Returns a summary of items, totals, delivery address, and available payment methods. IMPORTANT: After calling this, you MUST show the full summary to the user and ask them to explicitly confirm before calling place_order. Never place an order without user confirmation.",
+      inputSchema: z.object({}),
+    },
+    async () => {
+      try {
+        const preview = await client.previewOrder();
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify(preview, null, 2),
+            },
+          ],
+        };
+      } catch (error) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Error previewing order: ${(error as Error).message}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+  );
+
   // --- place_order ---
   server.registerTool(
     "place_order",
     {
       title: "Place Order",
       description:
-        "[NOT YET AVAILABLE] Place the current cart as an order. This feature is not yet implemented — the checkout API has not been reverse-engineered. Calling this tool will return an error.",
+        "Place the current cart as an order. You MUST call preview_order first and get explicit user confirmation before calling this. Supported payment methods: 'payment_on_delivery' (Cash on Delivery) and 'generic_creditcard' (saved credit card). The payment method name must match one from preview_order results.",
       inputSchema: z.object({
         payment_method: z
           .string()
-          .optional()
-          .describe("Payment method to use (uses account default if not specified)"),
-        special_instructions: z
+          .describe(
+            "Payment method name from preview_order results (e.g. 'payment_on_delivery' or 'generic_creditcard')"
+          ),
+        delivery_instructions: z
           .string()
           .optional()
-          .describe("Special delivery instructions"),
+          .describe("Special delivery instructions (e.g. 'Leave at door', 'Ring doorbell')"),
       }),
     },
-    async ({ payment_method, special_instructions }) => {
+    async ({ payment_method, delivery_instructions }) => {
       try {
-        const result = await client.placeOrder(payment_method, special_instructions);
+        const result = await client.placeOrder(payment_method, delivery_instructions);
         return {
           content: [
             {
