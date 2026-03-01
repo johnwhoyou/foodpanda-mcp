@@ -102,8 +102,7 @@ This prevents accidental orders — the AI cannot skip the confirmation step.
 ```bash
 git clone https://github.com/johnwhoyou/foodpanda-mcp.git
 cd foodpanda-mcp
-npm install
-npx playwright install chromium
+npm install    # also installs Google Chrome via postinstall
 npm run build
 ```
 
