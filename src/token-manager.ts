@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 
 const TOKEN_DIR = join(homedir(), ".foodpanda-mcp");
 const TOKEN_FILE = join(TOKEN_DIR, "token.json");
+const BROWSER_DATA_DIR = join(TOKEN_DIR, "browser-data");
 
 interface PersistedToken {
   token: string;
@@ -48,9 +49,16 @@ export async function refreshTokenViaBrowser(
     );
   }
 
-  let browser;
+  // Use a persistent context so the browser looks like a real user profile.
+  // This avoids Google blocking OAuth in automated/embedded browsers and
+  // preserves cookies across refreshes (user may already be logged in).
+  mkdirSync(BROWSER_DATA_DIR, { recursive: true, mode: 0o700 });
+
+  let context;
   try {
-    browser = await chromium.launch({ headless: false });
+    context = await chromium.launchPersistentContext(BROWSER_DATA_DIR, {
+      headless: false,
+    });
   } catch (err) {
     throw new Error(
       `Failed to launch browser. Make sure Chromium is installed: npx playwright install chromium\n${(err as Error).message}`
@@ -58,8 +66,7 @@ export async function refreshTokenViaBrowser(
   }
 
   try {
-    const context = await browser.newContext();
-    const page = await context.newPage();
+    const page = context.pages()[0] || await context.newPage();
 
     return await new Promise<string>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -93,6 +100,6 @@ export async function refreshTokenViaBrowser(
       });
     });
   } finally {
-    await browser.close().catch(() => {});
+    await context.close().catch(() => {});
   }
 }
