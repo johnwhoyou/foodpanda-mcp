@@ -12,6 +12,53 @@ Tell your AI assistant what you want to eat, and it handles the rest — searchi
 - Two-step checkout with order preview and explicit confirmation
 - Supports Cash on Delivery and saved credit card payments
 
+## Quick Start
+
+### 1. Get your foodpanda credentials
+
+1. Open [foodpanda.ph](https://www.foodpanda.ph/) and log in
+2. Open browser DevTools (F12) → **Network** tab
+3. Browse to any restaurant or search for food
+4. Find any request to `ph.fd-api.com`
+5. Copy the **Bearer token** from the `Authorization` header (without the `Bearer ` prefix)
+6. Get the latitude and longitude of your delivery address (right-click on [Google Maps](https://maps.google.com) → copy coordinates)
+
+### 2. Configure your MCP client
+
+#### Claude Desktop
+
+Add to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "foodpanda": {
+      "command": "npx",
+      "args": ["-y", "foodpanda-mcp"],
+      "env": {
+        "FOODPANDA_SESSION_TOKEN": "your-jwt-token-here",
+        "FOODPANDA_LATITUDE": "14.5623",
+        "FOODPANDA_LONGITUDE": "121.0137"
+      }
+    }
+  }
+}
+```
+
+#### Other MCP Clients
+
+Any MCP-compatible client that supports stdio transport will work. Set the three environment variables and run `npx foodpanda-mcp`.
+
+### 3. Try it out
+
+Ask your AI assistant:
+
+> "Search for Jollibee near me and show me their menu"
+
+> "Add 1 Chickenjoy to my cart"
+
+> "Preview my order and let me confirm before placing it"
+
 ## Available Tools
 
 | Tool | Description |
@@ -25,69 +72,6 @@ Tell your AI assistant what you want to eat, and it handles the rest — searchi
 | `remove_from_cart` | Remove items from cart |
 | `preview_order` | Preview order summary with delivery address and payment methods |
 | `place_order` | Place the order after user confirmation |
-
-## Quick Start
-
-### 1. Clone and build
-
-```bash
-git clone https://github.com/johnwhoyou/foodpanda-mcp.git
-cd foodpanda-mcp
-npm install
-npm run build
-```
-
-### 2. Get your session token
-
-1. Open [foodpanda.ph](https://www.foodpanda.ph/) and log in
-2. Open browser DevTools (F12) → **Network** tab
-3. Browse to any restaurant or search for food
-4. Find any request to `ph.fd-api.com`
-5. Copy the **Bearer token** from the `Authorization` header (without the `Bearer ` prefix)
-
-> **Note:** Session tokens expire periodically. You'll need to repeat this step when your token expires.
-
-### 3. Get your delivery coordinates
-
-Find the latitude and longitude of your delivery address. You can:
-- Check the request headers/query params in the same DevTools network tab (look for `latitude` and `longitude`)
-- Right-click your address on [Google Maps](https://maps.google.com) and copy the coordinates
-
-### 4. Configure your MCP client
-
-#### Claude Desktop
-
-Add to your `claude_desktop_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "foodpanda": {
-      "command": "node",
-      "args": ["/absolute/path/to/foodpanda-mcp/build/index.js"],
-      "env": {
-        "FOODPANDA_SESSION_TOKEN": "your-jwt-token-here",
-        "FOODPANDA_LATITUDE": "14.5623",
-        "FOODPANDA_LONGITUDE": "121.0137"
-      }
-    }
-  }
-}
-```
-
-#### Other MCP Clients
-
-Any MCP-compatible client that supports stdio transport will work. Set the three environment variables and run `node /path/to/foodpanda-mcp/build/index.js`.
-
-### 5. Try it out
-
-Ask your AI assistant:
-
-> "Search for Jollibee near me and show me their menu"
-
-> "Add 1 Chickenjoy to my cart"
-
-> "Preview my order and let me confirm before placing it"
 
 ## Environment Variables
 
@@ -115,12 +99,31 @@ This prevents accidental orders — the AI cannot skip the confirmation step.
 - **Checkout** fetches your saved addresses and payment methods, then submits to `/api/v5/cart/checkout`
 - Prices are in PHP (Philippine Peso)
 
-## Development
+## Building from Source
 
 ```bash
-npm run dev    # Watch mode — recompiles on changes
-npm run build  # One-time build
-npm start      # Run the server directly
+git clone https://github.com/johnwhoyou/foodpanda-mcp.git
+cd foodpanda-mcp
+npm install
+npm run build
+```
+
+Then use the local build in your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "foodpanda": {
+      "command": "node",
+      "args": ["/absolute/path/to/foodpanda-mcp/build/index.js"],
+      "env": {
+        "FOODPANDA_SESSION_TOKEN": "your-jwt-token-here",
+        "FOODPANDA_LATITUDE": "14.5623",
+        "FOODPANDA_LONGITUDE": "121.0137"
+      }
+    }
+  }
+}
 ```
 
 ## Limitations

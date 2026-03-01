@@ -1,7 +1,7 @@
 {
   "name": "foodpanda-mcp",
-  "version": "0.1.0",
-  "description": "MCP server for ordering food from foodpanda.ph",
+  "version": "1.0.0",
+  "description": "MCP server for ordering food from foodpanda.ph via AI assistants",
   "type": "module",
   "bin": {
     "foodpanda-mcp": "./build/index.js"
@@ -9,11 +9,27 @@
   "scripts": {
     "build": "tsc && chmod 755 build/index.js",
     "dev": "tsc --watch",
-    "start": "node build/index.js"
+    "start": "node build/index.js",
+    "prepublishOnly": "npm run build"
   },
   "files": [
     "build"
   ],
+  "keywords": [
+    "mcp",
+    "foodpanda",
+    "food-delivery",
+    "ai-assistant",
+    "model-context-protocol",
+    "claude",
+    "philippines"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/johnwhoyou/foodpanda-mcp.git"
+  },
+  "homepage": "https://github.com/johnwhoyou/foodpanda-mcp",
+  "author": "John Carlo Joyo",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
