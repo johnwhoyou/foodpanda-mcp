@@ -77,6 +77,10 @@ interface CachedVendorMenu {
   productsByCode: Map<string, MenuItem>;
   /** Flat lookup: product id -> MenuItem */
   productsById: Map<number, MenuItem>;
+  /** Flat lookup: topping option id -> { id, name, price } */
+  toppingOptionsById: Map<number, { id: number; name: string; price: number }>;
+  /** Timestamp when this cache entry was created */
+  cachedAt: number;
 }
 
 export class FoodpandaClient {
@@ -87,6 +91,7 @@ export class FoodpandaClient {
 
   // In-memory cart state (foodpanda cart is stateless / server recalculates)
   private cartProducts: CartProductPayload[] = [];
+  private cartItemIds: string[] = []; // stable IDs aligned with cartProducts
   private cartVendor: CartVendorPayload | null = null;
   private cartVendorName: string = "";
   private cartItems: CartItem[] = [];
@@ -204,7 +209,7 @@ export class FoodpandaClient {
 
   async searchRestaurants(
     query: string,
-    _cuisine?: string,
+    cuisine?: string,
     limit?: number
   ): Promise<Restaurant[]> {
     const body = {
@@ -314,8 +319,17 @@ export class FoodpandaClient {
       });
     }
 
+    // Client-side cuisine filter
+    let filtered = restaurants;
+    if (cuisine) {
+      const cuisineLower = cuisine.toLowerCase();
+      filtered = restaurants.filter((r) =>
+        r.cuisine.some((c) => c.toLowerCase().includes(cuisineLower))
+      );
+    }
+
     const maxResults = limit ?? 10;
-    return restaurants.slice(0, maxResults);
+    return filtered.slice(0, maxResults);
   }
 
   // ----------------------------------------------------------------
@@ -405,9 +419,12 @@ export class FoodpandaClient {
   // ----------------------------------------------------------------
 
   async getMenu(vendorCode: string): Promise<MenuCategory[]> {
-    // Check cache first
+    // Check cache first (15 min TTL)
+    const CACHE_TTL_MS = 15 * 60 * 1000;
     const cached = this.menuCache.get(vendorCode);
-    if (cached) return cached.categories;
+    if (cached && Date.now() - cached.cachedAt < CACHE_TTL_MS) {
+      return cached.categories;
+    }
 
     // Fetch via the vendor details endpoint (includes menus)
     const path =
@@ -437,6 +454,21 @@ export class FoodpandaClient {
     const toppingsDict = menu.toppings || {};
     const productsByCode = new Map<string, MenuItem>();
     const productsById = new Map<number, MenuItem>();
+    const toppingOptionsById = new Map<
+      number,
+      { id: number; name: string; price: number }
+    >();
+
+    // Build flat topping option lookup
+    for (const group of Object.values(toppingsDict)) {
+      for (const opt of group.options || []) {
+        toppingOptionsById.set(opt.id, {
+          id: opt.id,
+          name: opt.name,
+          price: opt.price,
+        });
+      }
+    }
 
     const categories: MenuCategory[] = (menu.menu_categories || []).map(
       (cat) => {
@@ -505,6 +537,8 @@ export class FoodpandaClient {
       categories,
       productsByCode,
       productsById,
+      toppingOptionsById,
+      cachedAt: Date.now(),
     });
   }
 
@@ -621,6 +655,7 @@ export class FoodpandaClient {
         this.cartProducts[existingIdx].quantity += input.quantity;
       } else {
         this.cartProducts.push(payload);
+        this.cartItemIds.push(`cart-${this.nextCartItemId++}`);
       }
     }
 
@@ -653,16 +688,16 @@ export class FoodpandaClient {
   // ----------------------------------------------------------------
 
   async removeFromCart(cartItemId: string): Promise<Cart> {
-    const idx = this.cartItems.findIndex((i) => i.cart_item_id === cartItemId);
+    const idx = this.cartItemIds.indexOf(cartItemId);
     if (idx < 0) {
       throw new Error(
         `Cart item "${cartItemId}" not found. Use get_cart to see current items.`
       );
     }
 
-    // Remove the corresponding product payload
-    // Cart items and cart products are aligned by index
+    // Remove the corresponding entries (all three arrays are aligned)
     this.cartProducts.splice(idx, 1);
+    this.cartItemIds.splice(idx, 1);
     this.cartItems.splice(idx, 1);
 
     if (this.cartProducts.length === 0) {
@@ -768,44 +803,34 @@ export class FoodpandaClient {
       0;
 
     // Rebuild cartItems from the response + our stored payloads
+    const cached = this.menuCache.get(this.cartVendor!.code);
     this.cartItems = this.cartProducts.map((payload, idx) => {
-      const serverProduct = result.products?.[idx];
+      // Match server response by (id, variation_id) instead of index
+      const serverProduct = result.products?.find(
+        (sp) => sp.id === payload.id && sp.variation_id === payload.variation_id
+      );
       const quantity = serverProduct?.quantity ?? payload.quantity;
       const unitPrice = serverProduct?.price ?? payload.price;
 
-      // Resolve topping names from cached menu
+      // Resolve topping names from flat lookup map
       const toppingDetails: Array<{
         id: number;
         name: string;
         price: number;
       }> = [];
-      const cached = this.menuCache.get(this.cartVendor!.code);
       if (cached) {
         for (const tGroup of payload.toppings) {
           for (const tOpt of tGroup.options) {
-            // Find the topping option in the menu cache
-            for (const cat of cached.categories) {
-              for (const item of cat.items) {
-                for (const group of item.topping_groups) {
-                  if (group.id === tGroup.id) {
-                    const opt = group.options.find((o) => o.id === tOpt.id);
-                    if (opt) {
-                      toppingDetails.push({
-                        id: opt.id,
-                        name: opt.name,
-                        price: opt.price,
-                      });
-                    }
-                  }
-                }
-              }
+            const opt = cached.toppingOptionsById.get(tOpt.id);
+            if (opt) {
+              toppingDetails.push(opt);
             }
           }
         }
       }
 
       return {
-        cart_item_id: `cart-${idx + 1}`,
+        cart_item_id: this.cartItemIds[idx],
         product_id: payload.id,
         variation_id: payload.variation_id,
         code: payload.code,
@@ -817,9 +842,6 @@ export class FoodpandaClient {
         special_instructions: payload.special_instructions,
       };
     });
-
-    // Re-index cart item IDs
-    this.nextCartItemId = this.cartItems.length + 1;
 
     return {
       restaurant_id: this.cartVendor.code,
@@ -834,6 +856,7 @@ export class FoodpandaClient {
 
   private clearCart(): void {
     this.cartProducts = [];
+    this.cartItemIds = [];
     this.cartVendor = null;
     this.cartVendorName = "";
     this.cartItems = [];
