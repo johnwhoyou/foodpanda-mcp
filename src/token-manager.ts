@@ -49,20 +49,33 @@ export async function refreshTokenViaBrowser(
     );
   }
 
-  // Use a persistent context so the browser looks like a real user profile.
-  // This avoids Google blocking OAuth in automated/embedded browsers and
-  // preserves cookies across refreshes (user may already be logged in).
+  // Use a persistent context with a real system browser so Google OAuth works.
+  // Playwright's bundled Chromium is blocked by Google sign-in.
+  // Try: Chrome → Edge → bundled Chromium (fallback for non-Google login).
   mkdirSync(BROWSER_DATA_DIR, { recursive: true, mode: 0o700 });
 
+  const channels: Array<{ channel?: string; label: string }> = [
+    { channel: "chrome", label: "Google Chrome" },
+    { channel: "msedge", label: "Microsoft Edge" },
+    { label: "Playwright Chromium" },
+  ];
+
   let context;
-  try {
-    context = await chromium.launchPersistentContext(BROWSER_DATA_DIR, {
-      headless: false,
-      channel: "chrome",
-    });
-  } catch (err) {
+  for (const { channel, label } of channels) {
+    try {
+      context = await chromium.launchPersistentContext(BROWSER_DATA_DIR, {
+        headless: false,
+        ...(channel ? { channel } : {}),
+      });
+      break;
+    } catch {
+      // Try next browser
+    }
+  }
+
+  if (!context) {
     throw new Error(
-      `Failed to launch browser. Make sure Google Chrome is installed.\n${(err as Error).message}`
+      "Failed to launch any browser. Install Google Chrome, Microsoft Edge, or run: npx playwright install chromium"
     );
   }
 
