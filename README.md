@@ -2,44 +2,69 @@
 
 An MCP server that lets AI assistants order food from [foodpanda.ph](https://www.foodpanda.ph/) on your behalf.
 
-## What it does
+Tell your AI assistant what you want to eat, and it handles the rest — searching restaurants, browsing menus, building a cart, and placing orders through your foodpanda account.
 
-Tell your AI assistant what you want to eat, and it handles the rest — searching restaurants, browsing menus, building a cart, and calculating totals through your foodpanda account.
+## Features
 
-### Available tools
+- Search restaurants by name or cuisine near your delivery address
+- Browse full menus with prices, descriptions, and customization options
+- Build a cart with real-time price validation from foodpanda
+- Two-step checkout with order preview and explicit confirmation
+- Supports Cash on Delivery and saved credit card payments
+
+## Available Tools
 
 | Tool | Description |
 |------|-------------|
 | `search_restaurants` | Search for restaurants by name or cuisine |
 | `get_restaurant_details` | Get restaurant info (hours, delivery fee, minimum order) |
-| `get_menu` | Browse a restaurant's full menu with topping options |
+| `get_menu` | Browse a restaurant's menu organized by category |
+| `get_item_details` | Get full item details including topping/customization options |
 | `add_to_cart` | Add items to your cart (validates prices with foodpanda) |
 | `get_cart` | View current cart contents and totals |
 | `remove_from_cart` | Remove items from cart |
-| `place_order` | *Not yet available* — checkout API not yet reverse-engineered |
+| `preview_order` | Preview order summary with delivery address and payment methods |
+| `place_order` | Place the order after user confirmation |
 
-## Setup
+## Quick Start
 
-### 1. Get your session token and delivery coordinates
+### 1. Clone and build
+
+```bash
+git clone https://github.com/johnwhoyou/foodpanda-mcp.git
+cd foodpanda-mcp
+npm install
+npm run build
+```
+
+### 2. Get your session token
 
 1. Open [foodpanda.ph](https://www.foodpanda.ph/) and log in
-2. Open browser DevTools (F12) -> **Network** tab
-3. Browse to a restaurant or search for food
+2. Open browser DevTools (F12) → **Network** tab
+3. Browse to any restaurant or search for food
 4. Find any request to `ph.fd-api.com`
 5. Copy the **Bearer token** from the `Authorization` header (without the `Bearer ` prefix)
-6. This is your `FOODPANDA_SESSION_TOKEN`
-7. For coordinates, find `latitude` and `longitude` in the request headers or query params, or use Google Maps to get your delivery address coordinates
 
-### 2. Configure your MCP client
+> **Note:** Session tokens expire periodically. You'll need to repeat this step when your token expires.
 
-Add to your MCP client config (e.g. `claude_desktop_config.json`):
+### 3. Get your delivery coordinates
+
+Find the latitude and longitude of your delivery address. You can:
+- Check the request headers/query params in the same DevTools network tab (look for `latitude` and `longitude`)
+- Right-click your address on [Google Maps](https://maps.google.com) and copy the coordinates
+
+### 4. Configure your MCP client
+
+#### Claude Desktop
+
+Add to your `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "foodpanda": {
       "command": "node",
-      "args": ["/path/to/foodpanda-mcp/build/index.js"],
+      "args": ["/absolute/path/to/foodpanda-mcp/build/index.js"],
       "env": {
         "FOODPANDA_SESSION_TOKEN": "your-jwt-token-here",
         "FOODPANDA_LATITUDE": "14.5623",
@@ -50,16 +75,21 @@ Add to your MCP client config (e.g. `claude_desktop_config.json`):
 }
 ```
 
-### 3. Build from source
+#### Other MCP Clients
 
-```bash
-git clone <repo-url>
-cd foodpanda-mcp
-npm install
-npm run build
-```
+Any MCP-compatible client that supports stdio transport will work. Set the three environment variables and run `node /path/to/foodpanda-mcp/build/index.js`.
 
-## Environment variables
+### 5. Try it out
+
+Ask your AI assistant:
+
+> "Search for Jollibee near me and show me their menu"
+
+> "Add 1 Chickenjoy to my cart"
+
+> "Preview my order and let me confirm before placing it"
+
+## Environment Variables
 
 | Variable | Required | Description |
 |----------|----------|-------------|
@@ -67,25 +97,40 @@ npm run build
 | `FOODPANDA_LATITUDE` | Yes | Latitude of your delivery address |
 | `FOODPANDA_LONGITUDE` | Yes | Longitude of your delivery address |
 
+## Order Safety
+
+The checkout flow is designed with a **human-in-the-loop** pattern:
+
+1. `preview_order` shows the full order summary (items, totals, delivery address, payment methods)
+2. The AI is instructed to **always show this to you and ask for confirmation**
+3. `place_order` only executes after you explicitly approve
+
+This prevents accidental orders — the AI cannot skip the confirmation step.
+
+## How It Works
+
+- **Search** uses foodpanda's GraphQL API with Apollo persisted queries
+- **Restaurant details and menus** use the REST API at `/api/v5/vendors/{code}`
+- **Cart** is stateless on foodpanda's side — this server maintains cart state in memory and sends the full cart to `/api/v5/cart/calculate` for price validation on every change
+- **Checkout** fetches your saved addresses and payment methods, then submits to `/api/v5/cart/checkout`
+- Prices are in PHP (Philippine Peso)
+
 ## Development
 
 ```bash
 npm run dev    # Watch mode — recompiles on changes
 npm run build  # One-time build
-npm start      # Run the server
+npm start      # Run the server directly
 ```
-
-## How it works
-
-- **Search** uses foodpanda's GraphQL API with a persisted query hash
-- **Restaurant details and menus** use the REST API at `/api/v5/vendors/{code}`
-- **Cart is stateless on the server side** — this MCP server maintains cart state in memory and sends the full cart to `/api/v5/cart/calculate` on every add/remove for price validation
-- Prices are in PHP (Philippine Peso). A price of `161` means PHP 161.00
 
 ## Limitations
 
-- **Session tokens expire.** You'll need to refresh your token periodically by repeating step 1.
+- **Session tokens expire.** Refresh your token by repeating the setup step when API calls start failing.
 - **No official API.** This server reverse-engineers foodpanda's internal web API. It may break if foodpanda changes their API.
-- **Philippines only.** This server targets foodpanda.ph specifically.
-- **Order placement not yet available.** The checkout/order API has not been reverse-engineered yet.
-- **Single delivery address.** The delivery location is set via environment variables at startup.
+- **Philippines only.** Targets foodpanda.ph specifically. Other regions use different API endpoints and may not work.
+- **Payment methods.** Currently supports Cash on Delivery and saved credit cards. GCash and other redirect-based payment methods are not supported.
+- **Single delivery address.** Uses the saved address closest to your configured coordinates.
+
+## License
+
+MIT
